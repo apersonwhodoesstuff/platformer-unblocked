@@ -1,0 +1,364 @@
+<html><head><base href="https://infiniteplatformer.websim.ai/"><title>Infinite 3D Platformer</title><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script><style>
+body { margin: 0; overflow: hidden; }
+#info { position: absolute; top: 10px; width: 100%; text-align: center; color: white; }
+#timer { position: absolute; top: 40px; width: 100%; text-align: center; color: white; }
+#cooldown { position: absolute; bottom: 10px; width: 100%; text-align: center; color: white; }
+#joystick-container {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    width: 100px;
+    height: 100px;
+    background-color: rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    touch-action: none;
+}
+#joystick {
+    position: absolute;
+    width: 50px;
+    height: 50px;
+    background-color: rgba(255, 255, 255, 0.5);
+    border-radius: 50%;
+    top: 25px;
+    left: 25px;
+}
+.control-button {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    background-color: rgba(255, 255, 255, 0.5);
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 20px;
+    font-weight: bold;
+    color: #333;
+    user-select: none;
+}
+#dash-button {
+    bottom: 20px;
+    right: 20px;
+}
+#jump-button {
+    bottom: 90px;
+    right: 20px;
+}
+</style></head><body>
+<div id="info">Use WASD or joystick to move, SPACE or jump button to jump (double jump), SHIFT or dash button to dash in camera direction (2s cooldown), E to boost upwards, F to randomize platforms. Click to capture mouse and control camera. Press ESC to release. Scroll to zoom in/out.</div>
+<div id="timer">Time: 0s</div>
+<div id="cooldown">Dash ready!</div>
+<div id="joystick-container">
+    <div id="joystick"></div>
+</div>
+<div id="dash-button" class="control-button">Dash</div>
+<div id="jump-button" class="control-button">Jump</div>
+<script>
+let scene, camera, renderer, player, platforms = [], goal, spawnPlatform;
+let canDash = true, dashCooldown = 2000;
+let startTime, elapsedTime = 0;
+let isPointerLocked = false;
+let cameraDistance = 10;
+let cameraRotation = { x: 0, y: 0 };
+let jumpVelocity = 0;
+let jumpsRemaining = 2;
+const gravity = 0.015;
+const jumpStrength = 0.3;
+const boostStrength = 0.5;
+
+function init() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    renderer = new THREE.WebGLRenderer();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    createSpawnPlatform();
+
+    player = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({color: 0xff0000})
+    );
+    player.position.set(0, spawnPlatform.position.y + 2, 0);
+    scene.add(player);
+
+    updateCameraPosition();
+
+    createPlatforms();
+    createGoal();
+
+    startTime = Date.now();
+
+    setupPointerLock();
+    setupZoom();
+    setupMobileControls();
+    animate();
+}
+
+function createSpawnPlatform() {
+    spawnPlatform = new THREE.Mesh(
+        new THREE.BoxGeometry(10, 0.5, 10),
+        new THREE.MeshBasicMaterial({color: 0x0000ff})
+    );
+    spawnPlatform.position.set(0, 0, 0);
+    scene.add(spawnPlatform);
+}
+
+function createPlatforms() {
+    for (let i = 0; i < 20; i++) {
+        const platform = new THREE.Mesh(
+            new THREE.BoxGeometry(Math.random() * 5 + 5, 0.5, Math.random() * 5 + 5),
+            new THREE.MeshBasicMaterial({color: 0x00ff00})
+        );
+        platform.position.set(
+            Math.random() * 100 - 50,
+            Math.random() * 20 - 10,
+            Math.random() * 100 - 50
+        );
+        scene.add(platform);
+        platforms.push(platform);
+    }
+}
+
+function createGoal() {
+    goal = new THREE.Mesh(
+        new THREE.BoxGeometry(5, 0.5, 5),
+        new THREE.MeshBasicMaterial({color: 0xff0000})
+    );
+    goal.position.set(
+        Math.random() * 100 - 50,
+        Math.random() * 20 - 10,
+        Math.random() * 100 - 50
+    );
+    scene.add(goal);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    handleMovement();
+    checkCollisions();
+    updateCameraPosition();
+
+    elapsedTime = (Date.now() - startTime) / 1000;
+    document.getElementById('timer').textContent = `Time: ${elapsedTime.toFixed(1)}s`;
+
+    renderer.render(scene, camera);
+}
+
+function handleMovement() {
+    const speed = 0.2;
+    const direction = new THREE.Vector3();
+    const rotation = new THREE.Quaternion();
+    rotation.setFromEuler(new THREE.Euler(0, cameraRotation.y, 0, 'YXZ'));
+    
+    if (keys.w || joystickDirection.y < 0) direction.z -= 1;
+    if (keys.s || joystickDirection.y > 0) direction.z += 1;
+    if (keys.a || joystickDirection.x < 0) direction.x -= 1;
+    if (keys.d || joystickDirection.x > 0) direction.x += 1;
+    
+    direction.applyQuaternion(rotation);
+    direction.normalize().multiplyScalar(speed);
+    
+    player.position.add(direction);
+
+    // Apply jump velocity
+    player.position.y += jumpVelocity;
+    jumpVelocity -= gravity;
+
+    // Handle jumping (double jump)
+    if ((keys[' '] || jumpButtonPressed) && jumpsRemaining > 0) {
+        jumpVelocity = jumpStrength;
+        jumpsRemaining--;
+        keys[' '] = false;
+        jumpButtonPressed = false;
+    }
+
+    // Handle upward boost
+    if (keys.e) {
+        jumpVelocity = boostStrength;
+        keys.e = false;
+    }
+
+    // Handle dashing
+    if ((keys.shift || dashButtonPressed) && canDash) {
+        const dashDistance = 5;
+        const dashDirection = new THREE.Vector3(
+            -Math.sin(cameraRotation.y) * Math.cos(cameraRotation.x),
+            -Math.sin(cameraRotation.x),
+            -Math.cos(cameraRotation.y) * Math.cos(cameraRotation.x)
+        );
+        player.position.add(dashDirection.normalize().multiplyScalar(dashDistance));
+
+        canDash = false;
+        document.getElementById('cooldown').textContent = 'Dash on cooldown';
+        setTimeout(() => {
+            canDash = true;
+            document.getElementById('cooldown').textContent = 'Dash ready!';
+        }, dashCooldown);
+
+        keys.shift = false;
+        dashButtonPressed = false;
+    }
+}
+
+function updateCameraPosition() {
+    const cameraOffset = new THREE.Vector3(
+        Math.sin(cameraRotation.y) * cameraDistance,
+        Math.sin(cameraRotation.x) * cameraDistance + 2,
+        Math.cos(cameraRotation.y) * cameraDistance
+    );
+    camera.position.copy(player.position).add(cameraOffset);
+    camera.lookAt(player.position);
+}
+
+function checkCollisions() {
+    let onPlatform = false;
+    platforms.concat(spawnPlatform).forEach(platform => {
+        if (collideWithPlatform(player, platform)) {
+            player.position.y = platform.position.y + platform.geometry.parameters.height / 2 + player.geometry.parameters.height / 2;
+            jumpVelocity = 0;
+            onPlatform = true;
+        }
+    });
+
+    if (onPlatform) {
+        jumpsRemaining = 2; // Reset jumps when on a platform
+    }
+
+    if (collideWithPlatform(player, goal)) {
+        alert(`You win! Time: ${elapsedTime.toFixed(1)}s`);
+        resetGame();
+    }
+
+    if (player.position.y < -20) {
+        alert('You fell! Try again.');
+        resetGame();
+    }
+}
+
+function collideWithPlatform(obj1, obj2) {
+    return (
+        Math.abs(obj1.position.x - obj2.position.x) < (obj1.geometry.parameters.width + obj2.geometry.parameters.width) / 2 &&
+        Math.abs(obj1.position.y - obj2.position.y) < (obj1.geometry.parameters.height + obj2.geometry.parameters.height) / 2 &&
+        Math.abs(obj1.position.z - obj2.position.z) < (obj1.geometry.parameters.depth + obj2.geometry.parameters.depth) / 2
+    );
+}
+
+function resetGame() {
+    player.position.set(0, spawnPlatform.position.y + 2, 0);
+    jumpVelocity = 0;
+    jumpsRemaining = 2;
+    platforms.forEach(platform => scene.remove(platform));
+    platforms = [];
+    createPlatforms();
+    scene.remove(goal);
+    createGoal();
+    startTime = Date.now();
+    elapsedTime = 0;
+}
+
+const keys = {};
+document.addEventListener('keydown', (e) => {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key === 'f') resetGame();
+});
+document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function setupPointerLock() {
+    const canvas = renderer.domElement;
+
+    canvas.addEventListener('click', () => {
+        canvas.requestPointerLock();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+        isPointerLocked = document.pointerLockElement === canvas;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (isPointerLocked) {
+            const movementX = e.movementX || e.mozMovementX || e.webkitMovementX || 0;
+            const movementY = e.movementY || e.mozMovementY || e.webkitMovementY || 0;
+
+            cameraRotation.y -= movementX * 0.002;
+            cameraRotation.x += movementY * 0.002;
+
+            cameraRotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, cameraRotation.x));
+        }
+    });
+}
+
+function setupZoom() {
+    document.addEventListener('wheel', (e) => {
+        cameraDistance += e.deltaY * 0.01;
+        cameraDistance = Math.max(5, Math.min(20, cameraDistance));
+    });
+}
+
+let joystickDirection = { x: 0, y: 0 };
+let jumpButtonPressed = false;
+let dashButtonPressed = false;
+
+function setupMobileControls() {
+    const joystickContainer = document.getElementById('joystick-container');
+    const joystick = document.getElementById('joystick');
+    const dashButton = document.getElementById('dash-button');
+    const jumpButton = document.getElementById('jump-button');
+
+    let joystickActive = false;
+    let joystickOrigin = { x: 0, y: 0 };
+
+    joystickContainer.addEventListener('touchstart', (e) => {
+        joystickActive = true;
+        const touch = e.touches[0];
+        joystickOrigin.x = touch.clientX;
+        joystickOrigin.y = touch.clientY;
+    });
+
+    joystickContainer.addEventListener('touchmove', (e) => {
+        if (joystickActive) {
+            const touch = e.touches[0];
+            const deltaX = touch.clientX - joystickOrigin.x;
+            const deltaY = touch.clientY - joystickOrigin.y;
+            const distance = Math.min(25, Math.sqrt(deltaX * deltaX + deltaY * deltaY));
+            const angle = Math.atan2(deltaY, deltaX);
+
+            joystick.style.transform = `translate(${Math.cos(angle) * distance}px, ${Math.sin(angle) * distance}px)`;
+
+            joystickDirection.x = Math.cos(angle) * (distance / 25);
+            joystickDirection.y = Math.sin(angle) * (distance / 25);
+        }
+    });
+
+    joystickContainer.addEventListener('touchend', () => {
+        joystickActive = false;
+        joystick.style.transform = 'translate(0px, 0px)';
+        joystickDirection = { x: 0, y: 0 };
+    });
+
+    dashButton.addEventListener('touchstart', () => {
+        dashButtonPressed = true;
+    });
+
+    dashButton.addEventListener('touchend', () => {
+        dashButtonPressed = false;
+    });
+
+    jumpButton.addEventListener('touchstart', () => {
+        jumpButtonPressed = true;
+    });
+
+    jumpButton.addEventListener('touchend', () => {
+        jumpButtonPressed = false;
+    });
+}
+
+init();
+</script></body></html>
